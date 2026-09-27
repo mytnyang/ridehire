@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "glasses-journal",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Fingerprinting a long video takes seconds of CPU; needs the Workers Paid plan.
+  "limits": { "cpu_ms": 300000 },
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "glasses-journal" }
+  ],
+  "vars": {
+    // Notion database the Worker logs into ("Glasses Journal").
+    "NOTION_DATABASE_ID": "06f88d38eba54a27ac2d66c26717fc0e",
+    // Used when a photo's EXIF time has no UTC offset, and for page titles.
+    "TIMEZONE": "America/Chicago",
+    // Must match bucket_name above; used to build direct-to-R2 upload URLs.
+    "R2_BUCKET_NAME": "glasses-journal",
+    // Tags applied to every new row. Comma-separated; empty for none.
+    "DEFAULT_TAGS": "With daughter",
+    "CAPTION_MODEL": "claude-opus-5"
+  }
+  // Secrets (set with `npx wrangler secret put NAME`):
+  //   UPLOAD_TOKEN          - shared secret the iPhone Shortcut sends
+  //   LINK_SECRET           - signs the "Original" links written to Notion
+  //   NOTION_TOKEN          - Notion internal integration secret
+  //   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
+  //                         - optional; enables direct-to-R2 uploads (needed for videos over 100 MB)
+  //   ANTHROPIC_API_KEY     - optional; enables auto-captions
+}

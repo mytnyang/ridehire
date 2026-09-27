@@ -1,0 +1,23 @@
+{
+  "name": "glasses-journal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that archives Meta glasses photos/videos to R2 and logs each one in Notion",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260927.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2",
+    "wrangler": "^4.141.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "aws4fetch": "^1.0.20"
+  }
+}
