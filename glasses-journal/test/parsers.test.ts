@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatTaken, resolveCapture } from "../src/capture";
+import { formatTaken, localDayAndTime, resolveCapture } from "../src/capture";
 import { parseJpegExif } from "../src/exif";
 import { readMp4Info } from "../src/mp4";
 import { buildJpeg, buildMp4 } from "./fixtures";
@@ -113,5 +113,14 @@ describe("formatTaken", () => {
   it("shows zoned times in the display zone and zoneless times as-is", () => {
     expect(formatTaken({ start: "2026-09-27T20:04:05Z", source: "" }, "America/Chicago")).toBe("Sep 27, 2026, 3:04 PM");
     expect(formatTaken({ start: "2026-09-27T15:04:05", timeZone: "America/Chicago", source: "" }, "America/Chicago")).toBe("Sep 27, 2026, 3:04 PM");
+  });
+});
+
+describe("localDayAndTime", () => {
+  it("puts a late-evening UTC instant on the local day", () => {
+    expect(localDayAndTime({ start: "2026-10-19T03:30:00Z", source: "" }, "America/Chicago")).toEqual({ day: "2026-10-18", time: "10:30 PM", sortKey: "22:30:00" });
+  });
+  it("keeps zoneless times as they are", () => {
+    expect(localDayAndTime({ start: "2026-10-18T07:05:09", timeZone: "America/Chicago", source: "" }, "America/Chicago")).toEqual({ day: "2026-10-18", time: "7:05 AM", sortKey: "07:05:09" });
   });
 });

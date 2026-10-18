@@ -5,7 +5,7 @@ This setup looks at the photos and videos on your iPhone, both iPhone-camera and
 - given a **SHA-256 fingerprint**
 - logged in **Legacy's Life Journal** in Notion
 
-Once an item is logged, its phone copy can be deleted to free up space, under strict safety rules. **Everything that isn't of Legacy is left alone**: it isn't uploaded, logged or deleted.
+When an item is safely backed up and verified, the Shortcut adds it to a **"Backed Up"** album on your iPhone. **Nothing is ever deleted automatically.** You delete what you want from that album yourself. Each day also gets a **timeline page** listing its moments in order. **Everything that isn't of Legacy is left alone**: it isn't uploaded or logged.
 
 ```
 iPhone camera roll (iPhone camera + Meta glasses via the Meta AI app)
@@ -14,8 +14,8 @@ iPhone camera roll (iPhone camera + Meta glasses via the Meta AI app)
 1. /v1/screen   small preview ─▶ Claude: "is there a baby or toddler?"
                  no  ─▶ left alone on the phone (decision remembered)
                  yes ─▶ continue
-2. upload the original ─▶ R2          3. log ─▶ Legacy's Life Journal (Notion)
-4. delete from phone, only if safeToDelete (and you confirm)
+2. upload the original ─▶ R2          3. log ─▶ Legacy's Life Journal (Notion) + that day's timeline
+4. verified backed up ─▶ added to the "Backed Up" album (you delete manually, if you want)
 ```
 
 No computer is involved after setup.
@@ -30,30 +30,46 @@ No computer is involved after setup.
 - **Privacy:** each new photo's small preview is sent to the Claude API for screening. Hidden, "Private" album and screenshot items are never sent.
 - If the AI can't answer (an error or a refusal), the item is left alone and asked about again on the next run.
 
-## Safety rules: nothing sensitive gets deleted
+## Safety: nothing is deleted for you
 
-| What | Screened / uploaded? | Deleted from phone? |
+The system **never deletes anything** from your phone. It only adds verified items to a **"Backed Up"** album. An item goes into that album only when **all** of these are true:
+1. The original is archived in Cloudflare R2.
+2. It's logged in Legacy's Life Journal. The Worker refuses to log anything that didn't pass screening.
+3. The fingerprint the iPhone computed matches the archived original's fingerprint. The Worker returns `safeToDelete: true` only in that case.
+
+**Rule of thumb: only delete from the "Backed Up" album.** Anything outside it may not be backed up. Before you delete, you can open an item's Notion entry and play or open its original. Deleted items still sit in **Photos → Recently Deleted for 30 days**. If iCloud Photos is on, deleting on one device deletes on all of them; the R2 copy is your archive. The Worker never deletes an original it has logged.
+
+| What | Screened / uploaded? | Goes in "Backed Up"? |
 |---|---|---|
 | **Hidden** items, and anything in a **"Private"** album | No, never touched | No |
 | **Screenshots** (often text-message evidence) | No, never touched | No |
-| Not of Legacy (Claude said no, and not in the Legacy album) | Preview screened only | No |
-| **♥ Favorites** of Legacy | Yes, uploaded and logged | **No, always kept** |
-| Other items of Legacy | Yes, uploaded and logged | Only if every check below passes |
+| Not of Legacy (Claude said no, and not in the Legacy album) | Preview screened only | No, so don't delete it expecting a backup |
+| Items of Legacy | Yes, uploaded and logged | Yes, once verified |
 
-An item is deleted only if **every** one of these is true:
-1. The Worker archived the original and logged it in Legacy's Life Journal. The Worker refuses to log anything that didn't pass screening.
-2. The fingerprint the iPhone computed matches the archived original's fingerprint. The Worker returns `safeToDelete: true` only in that case.
-3. You tap **Delete** on iOS's confirmation. Apple requires this, and it can't be skipped.
-
-Even then, deleted items sit in **Photos → Recently Deleted for 30 days**. If iCloud Photos is on, deleting on one device deletes on all of them; the R2 copy is your archive. The Worker never deletes an original it has logged.
-
-**Roll it out in two stages.** Build the Shortcut **without** the delete steps first. Run it, then check Legacy's Life Journal:
+**First, a trial run.** After setup, run the Shortcut once and check Legacy's Life Journal:
 - Are the right photos there?
-- Do the "Original" links open?
+- Do the originals open, and do videos play?
 
-Only then add the delete steps.
+Then start deleting from "Backed Up" as you like.
 
 **Optional, for evidence:** Cloudflare R2 can lock a bucket so objects can't be deleted or overwritten for a set retention period. Check the "bucket locks" section of the R2 docs; if you use it, set it on the `glasses-journal` bucket.
+
+## Day timelines
+
+Each day that has logged moments gets a page in Legacy's Life Journal named like **"Legacy's day · Sun, Oct 18, 2026"** and tagged `Timeline`. It lists that day's moments in time order:
+
+```
+9:00 AM · Photo · Tummy time on the blanket
+3:04 PM · Video · Playing at the park
+```
+
+Each line links to its entry, where the original can be opened or played. The titles are written by the AI. The page is redrawn in order every time something from that day is logged, even if items arrive out of order during a backlog run. To see just the timelines, filter the database by the `Timeline` tag.
+
+## Playing originals
+
+- **Video entries** have a player at the top that streams the archived original. The "Original file" link opens it full screen. Seeking works, because the Worker serves byte ranges.
+- iPhone videos are usually HEVC (`.mov`). They play in Safari and on Apple devices. Some browsers on Windows can't play HEVC; the file is fine, so download it and play it in VLC.
+- If Notion ever declines the embedded player, the entry is still logged, and the "Original file" link plays it.
 
 ## What each Notion entry contains
 
@@ -117,8 +133,10 @@ Deploy with `npm run deploy`. Note the URL it prints, e.g. `https://glasses-jour
 ### 4. iPhone prep
 
 - **Meta AI app:** go to **Settings → your glasses → Media → Auto-import** (older app versions call it *Import automatically*) and turn it on. Glasses captures will then land in your camera roll.
-- In **Photos**, create two albums: **Private** (never touched) and **Legacy** (always logged).
-- ♥ anything you want kept on the phone.
+- In **Photos**, create three albums:
+  - **Private**: never touched
+  - **Legacy**: always logged
+  - **Backed Up**: the Shortcut adds verified items here, and you delete from it whenever you like
 
 ### 5. iPhone Shortcuts
 
@@ -171,7 +189,7 @@ This shortcut handles one photo or video. In its settings, set it to **receive M
       - `takenAt` = the formatted date
       - `latitude`, `longitude`, `place` = the location details
       - `preview` = *Preview*
-12. **Stop and Output** *Contents → safeToDelete*. It's `true` only when everything checked out.
+12. **Stop and Output** *Contents → safeToDelete*. It's `true` only when the item is archived, logged and fingerprint-verified.
 
 #### B. "Photos → Journal" (new items)
 
@@ -187,16 +205,15 @@ This shortcut handles one photo or video. In its settings, set it to **receive M
    1. **Run Shortcut** "Journal: Send Item" with the item as input, and `InAlbum` = `false`.
    2. **If** the result is `retry`: **Stop This Shortcut**. The bookmark stays put, so this item is retried next run.
    3. **Adjust Date**: the item's Date Taken minus 1 second. **Save File** with that date to `journal-bookmark.txt`, overwriting the old one.
-   4. **Stage 2 only.** **If** the result is `true` **and** *Is Favorite* is false: **Add to Variable** `ToDelete`.
-4. **Stage 2 only.** **If** *ToDelete* has any value: **Delete Photos** *ToDelete*. Check that the count iOS shows looks right.
-5. **Run Shortcut** "Legacy Album → Journal".
+   4. **If** the result is `true`: **Add to Album** "Backed Up" with the item as input.
+4. **Run Shortcut** "Legacy Album → Journal".
 
 #### C. "Legacy Album → Journal"
 
 This is the same as B, but simpler:
 - **Find Photos** where *Album* is `Legacy` (no bookmark, no date filter).
 - Run "Journal: Send Item" with `InAlbum` = `true`.
-- Keep the same Stage 2 delete logic.
+- If the result is `true`, add the item to "Backed Up".
 
 Items already logged return immediately without re-uploading.
 
@@ -213,7 +230,7 @@ Everything except `/health`, `/m/…` and the signed upload URL needs `Authoriza
 | `POST` | `/v1/screen` | Multipart: `sha256` (of the original), `preview` (JPEG), `inLegacyAlbum`. → `{include, reason, title?}`, or `{include: true, alreadyLogged: true, safeToDelete}`, or `{include: false, retry: true}`. Decisions are cached by `sha256`; the album overrides an earlier "no". |
 | `POST` | `/v1/uploads` | `{"filename":"IMG_1.jpg"}` → `{file, uploadUrl, completeUrl, direct}` |
 | `PUT` | *uploadUrl* | Raw file bytes. Signed, expires in 1 h. Goes direct to R2 when R2 keys are set. |
-| `POST` | `/v1/uploads/:file/complete` | Multipart: `sha256`, `filename`, `takenAt`, `latitude`, `longitude`, `place`, `preview`. Refuses items that didn't pass screening. → `{status: "logged" \| "duplicate", sha256, notionUrl, safeToDelete}`. Safe to retry. |
+| `POST` | `/v1/uploads/:file/complete` | Multipart: `sha256`, `filename`, `takenAt`, `latitude`, `longitude`, `place`, `preview`. Refuses items that didn't pass screening. → `{status: "logged" \| "duplicate", sha256, notionUrl, safeToDelete, timeline}`. Safe to retry. |
 | `GET` | `/m/:file?sig=…` | The original file, with Range support so videos stream. |
 
 Supported types: jpg, jpeg, heic, png, mp4, mov. Capture metadata is read from JPEG EXIF and MP4/MOV headers. For other formats, the Worker uses what the Shortcut sends.

@@ -88,3 +88,26 @@ export function formatTaken(t: CaptureTime, displayZone: string): string {
   if (t.timeZone) return fmt("UTC", new Date(t.start + "Z")); // zoneless wall-clock time: show as-is
   return fmt(displayZone, new Date(t.start));
 }
+
+/** Local calendar day, display time and a sortable time-of-day for a capture. */
+export function localDayAndTime(t: CaptureTime, displayZone: string): { day: string; time: string; sortKey: string } {
+  // Zoneless wall-clock times are already local; zoned instants are shown in displayZone.
+  const zone = t.timeZone ? "UTC" : displayZone;
+  const d = new Date(t.timeZone ? t.start + "Z" : t.start);
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(d)
+      .map((p) => [p.type, p.value]),
+  );
+  const time = d.toLocaleTimeString("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit" });
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, time, sortKey: `${parts.hour}:${parts.minute}:${parts.second}` };
+}

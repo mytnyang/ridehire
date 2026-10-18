@@ -46,6 +46,9 @@ export async function createJournalPage(cfg: NotionConfig, entry: JournalEntry):
   details.push(`File: ${entry.filename} (${(entry.sizeBytes / 1_048_576).toFixed(2)} MB)`);
 
   const children: unknown[] = [];
+  // Videos get a player that streams the archived original (the Worker serves byte ranges).
+  const player = entry.kind === "Video" ? { type: "video", video: { type: "external", external: { url: entry.originalUrl } } } : undefined;
+  if (player) children.push(player);
   if (previewId) children.push({ type: "image", image: { type: "file_upload", file_upload: { id: previewId } } });
   children.push(paragraph([text("Original file: "), link(`${entry.filename} (${entry.kind.toLowerCase()})`, entry.originalUrl)]));
   for (const d of details) children.push(bullet(d));
@@ -67,13 +70,54 @@ export async function createJournalPage(cfg: NotionConfig, entry: JournalEntry):
     bullet(`Archived unmodified in Cloudflare R2 as ${entry.storageKey}`),
   );
 
+  const create = (blocks: unknown[]) =>
+    notion(cfg, "/v1/pages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ parent: { database_id: cfg.databaseId }, properties, children: blocks }),
+    });
+  let res: Response;
+  try {
+    res = await create(children);
+  } catch (err) {
+    // If Notion won't accept the embedded player, still log the entry; the "Original file" link plays it too.
+    if (!player || !(err instanceof NotionError) || err.status !== 400) throw err;
+    res = await create(children.filter((c) => c !== player));
+  }
+  const page = (await res.json()) as { id: string; url: string };
+  return { id: page.id, url: page.url };
+}
+
+/** Creates a page in the journal database with the given properties and no body. */
+export async function createPage(cfg: NotionConfig, properties: Record<string, unknown>): Promise<string> {
   const res = await notion(cfg, "/v1/pages", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ parent: { database_id: cfg.databaseId }, properties, children }),
+    body: JSON.stringify({ parent: { database_id: cfg.databaseId }, properties }),
   });
-  const page = (await res.json()) as { id: string; url: string };
-  return { id: page.id, url: page.url };
+  return ((await res.json()) as { id: string }).id;
+}
+
+/** Appends blocks to a page and returns the new blocks' ids, in order. */
+export async function appendBlocks(cfg: NotionConfig, pageId: string, blocks: unknown[]): Promise<string[]> {
+  const ids: string[] = [];
+  for (let i = 0; i < blocks.length; i += 100) {
+    const res = await notion(cfg, `/v1/blocks/${pageId}/children`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ children: blocks.slice(i, i + 100) }),
+    });
+    ids.push(...((await res.json()) as { results: { id: string }[] }).results.map((r) => r.id));
+  }
+  return ids;
+}
+
+export async function deleteBlock(cfg: NotionConfig, blockId: string): Promise<void> {
+  try {
+    await notion(cfg, `/v1/blocks/${blockId}`, { method: "DELETE" });
+  } catch (err) {
+    if (!(err instanceof NotionError) || err.status !== 404) throw err; // already gone
+  }
 }
 
 async function uploadFile(cfg: NotionConfig, file: NonNullable<JournalEntry["preview"]>): Promise<string> {
@@ -94,11 +138,20 @@ async function notion(cfg: NotionConfig, path: string, init: RequestInit): Promi
     ...init,
     headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${cfg.token}`, "notion-version": NOTION_VERSION },
   });
-  if (!res.ok) throw new Error(`Notion ${path} failed: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new NotionError(res.status, `Notion ${path} failed: ${res.status} ${await res.text()}`);
   return res;
 }
 
-const text = (content: string) => ({ type: "text", text: { content: content.slice(0, 2000) } });
-const link = (content: string, url: string) => ({ type: "text", text: { content, link: { url } } });
+class NotionError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export const text = (content: string) => ({ type: "text", text: { content: content.slice(0, 2000) } });
+export const link = (content: string, url: string) => ({ type: "text", text: { content, link: { url } } });
 const paragraph = (rich_text: unknown[]) => ({ type: "paragraph", paragraph: { rich_text } });
-const bullet = (s: string) => ({ type: "bulleted_list_item", bulleted_list_item: { rich_text: [text(s)] } });
+export const bullet = (s: string) => ({ type: "bulleted_list_item", bulleted_list_item: { rich_text: [text(s)] } });

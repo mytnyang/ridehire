@@ -8,11 +8,12 @@
 //   GET  /m/:file?sig=...                  (signed link to the original, written into Notion)
 
 import { AwsClient } from "aws4fetch";
-import { formatTaken, resolveCapture, type PhoneMetadata } from "./capture";
+import { formatTaken, localDayAndTime, resolveCapture, type PhoneMetadata } from "./capture";
 import { parseJpegExif } from "./exif";
 import { readMp4Info } from "./mp4";
 import { createJournalPage } from "./notion";
 import { screenPhoto, type ScreenResult } from "./screen";
+import { addToDayTimeline } from "./timeline";
 
 export interface Env {
   MEDIA: R2Bucket;
@@ -229,8 +230,10 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
   }
 
   const kind = isVideo ? "Video" : "Photo";
+  const notionCfg = { token: env.NOTION_TOKEN, databaseId: env.NOTION_DATABASE_ID, apiBase: env.NOTION_API_BASE };
+  const tags = (env.DEFAULT_TAGS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
   const page = await createJournalPage(
-    { token: env.NOTION_TOKEN, databaseId: env.NOTION_DATABASE_ID, apiBase: env.NOTION_API_BASE },
+    notionCfg,
     {
       title: decision.title ?? `${kind} · ${formatTaken(capture.taken, env.TIMEZONE)}`,
       kind,
@@ -241,7 +244,7 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
       phoneSha256Matched: phoneVerified,
       originalUrl: `${url.origin}/m/${file}?sig=${await sign(env, file)}`,
       storageKey: key,
-      tags: (env.DEFAULT_TAGS ?? "").split(",").map((t) => t.trim()).filter(Boolean),
+      tags,
       selection: decision.source === "legacy-album" ? "Added from the Legacy album." : `Picked by AI: ${decision.reason}`,
       preview,
     },
@@ -249,7 +252,17 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
 
   const marker: HashMarker = { key, notionPageId: page.id, notionUrl: page.url, loggedAt: new Date().toISOString() };
   await env.MEDIA.put(markerKey, JSON.stringify(marker), { httpMetadata: { contentType: "application/json" } });
-  return json({ status: "logged", sha256, notionUrl: page.url, safeToDelete: phoneVerified });
+
+  // The entry is safely logged at this point; a timeline hiccup must not undo that.
+  let timeline = true;
+  try {
+    const { day, time, sortKey } = localDayAndTime(capture.taken, env.TIMEZONE);
+    await addToDayTimeline(notionCfg, env.MEDIA, day, { sortKey, time, kind, pageId: page.id }, tags);
+  } catch (err) {
+    console.error("timeline update failed", err);
+    timeline = false;
+  }
+  return json({ status: "logged", sha256, notionUrl: page.url, safeToDelete: phoneVerified, timeline });
 }
 
 async function serveOriginal(request: Request, env: Env, file: string, url: URL): Promise<Response> {
@@ -261,7 +274,10 @@ async function serveOriginal(request: Request, env: Env, file: string, url: URL)
   if (!obj) return new Response("not found", { status: 404 });
   const headers = new Headers();
   obj.writeHttpMetadata(headers);
-  if (!headers.has("content-type")) headers.set("content-type", contentTypeOf(file));
+  // Direct-to-R2 uploads from the phone may be stored as application/octet-stream,
+  // which browsers download instead of playing; the extension is authoritative.
+  headers.set("content-type", contentTypeOf(file));
+  headers.set("content-disposition", "inline");
   headers.set("accept-ranges", "bytes");
   headers.set("etag", obj.httpEtag);
   headers.set("cache-control", "private, max-age=3600");
