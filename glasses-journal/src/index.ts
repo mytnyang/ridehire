@@ -1,17 +1,18 @@
 // Glasses Journal: receives photos/videos from an iPhone Shortcut, archives the
 // untouched original in R2, fingerprints it, and logs it as a row in Notion.
 //
+//   POST /v1/screen                       (multipart: sha256, preview, inLegacyAlbum) -> { include, reason, alreadyLogged? }
 //   POST /v1/uploads                      -> { file, uploadUrl, completeUrl }
 //   PUT  <uploadUrl>                       (the raw file; direct to R2 when R2 keys are set)
 //   POST /v1/uploads/:file/complete        (multipart: sha256, takenAt, latitude, longitude, place, preview)
 //   GET  /m/:file?sig=...                  (signed link to the original, written into Notion)
 
 import { AwsClient } from "aws4fetch";
-import { captionPhoto } from "./caption";
 import { formatTaken, resolveCapture, type PhoneMetadata } from "./capture";
 import { parseJpegExif } from "./exif";
 import { readMp4Info } from "./mp4";
 import { createJournalPage } from "./notion";
+import { screenPhoto, type ScreenResult } from "./screen";
 
 export interface Env {
   MEDIA: R2Bucket;
@@ -27,7 +28,8 @@ export interface Env {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   ANTHROPIC_API_KEY?: string;
-  CAPTION_MODEL?: string;
+  ANTHROPIC_BASE_URL?: string;
+  AI_MODEL?: string;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -42,8 +44,15 @@ const VIDEO_EXTS = new Set(["mp4", "mov"]);
 const FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|heic|png|mp4|mov)$/;
 const EXIF_SCAN_BYTES = 256 * 1024;
 const MAX_INLINE_PREVIEW_BYTES = 4 * 1024 * 1024;
-const MAX_CAPTION_IMAGE_BYTES = 3_500_000;
+const MAX_SCREEN_IMAGE_BYTES = 3_500_000;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 const UPLOAD_URL_TTL_SECONDS = 3600;
+
+/** Cached screening decision, keyed by the original's SHA-256. */
+interface ScreenDecision extends ScreenResult {
+  source: "ai" | "legacy-album";
+  decidedAt: string;
+}
 
 interface HashMarker {
   key: string;
@@ -69,6 +78,7 @@ export default {
 
       if (!(await authorized(request, env))) return json({ error: "unauthorized" }, 401);
 
+      if (request.method === "POST" && path === "/v1/screen") return screen(request, env);
       if (request.method === "POST" && path === "/v1/uploads") return startUpload(request, env, url);
 
       const complete = /^\/v1\/uploads\/([^/]+)\/complete$/.exec(path);
@@ -81,6 +91,44 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+// Decides, before anything is uploaded, whether an item belongs in Legacy's
+// Life Journal. Items that don't are never uploaded, logged or deleted.
+async function screen(request: Request, env: Env): Promise<Response> {
+  const form = await request.formData();
+  const sha256 = String(form.get("sha256") ?? "").trim().toLowerCase();
+  if (!SHA256_RE.test(sha256)) return json({ error: "sha256 (hex) is required" }, 400);
+
+  // Already archived and logged: no need to upload again. The phone's fingerprint
+  // matches the archived original, so its copy is safe to delete.
+  const marker = await env.MEDIA.get(`by-hash/${sha256}.json`);
+  if (marker) {
+    const { key, notionUrl } = (await marker.json()) as HashMarker;
+    if (await env.MEDIA.head(key)) return json({ include: true, alreadyLogged: true, notionUrl, safeToDelete: true, reason: "Already logged" });
+  }
+
+  let decision: ScreenDecision;
+  // The Legacy album always wins, including over an earlier "no" from the AI.
+  if (String(form.get("inLegacyAlbum") ?? "").toLowerCase() === "true") {
+    decision = { include: true, reason: "In the Legacy album", source: "legacy-album", decidedAt: new Date().toISOString() };
+  } else {
+    const cached = await env.MEDIA.get(decisionKey(sha256));
+    if (cached) return json({ ...((await cached.json()) as ScreenDecision), cached: true });
+    if (!env.ANTHROPIC_API_KEY) return json({ error: "ANTHROPIC_API_KEY is not set" }, 503);
+    const preview = form.get("preview");
+    if (!preview || typeof preview === "string" || preview.size === 0) {
+      return json({ include: false, reason: "No preview image sent; not decided", retry: true });
+    }
+    const bytes = new Uint8Array(await preview.arrayBuffer());
+    if (bytes.length > MAX_SCREEN_IMAGE_BYTES) return json({ include: false, reason: "Preview too large; resize it smaller", retry: true });
+    const result = await screenPhoto({ apiKey: env.ANTHROPIC_API_KEY, model: env.AI_MODEL || "claude-opus-5", baseURL: env.ANTHROPIC_BASE_URL }, bytes);
+    // Not cached, so the item is simply left alone and asked about again next run.
+    if (!result) return json({ include: false, reason: "AI could not decide right now; will retry", retry: true });
+    decision = { ...result, source: "ai", decidedAt: new Date().toISOString() };
+  }
+  await env.MEDIA.put(decisionKey(sha256), JSON.stringify(decision), { httpMetadata: { contentType: "application/json" } });
+  return json(decision);
+}
 
 async function startUpload(request: Request, env: Env, url: URL): Promise<Response> {
   const { filename } = (await request.json().catch(() => ({}))) as { filename?: string };
@@ -150,6 +198,14 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
     }
   }
 
+  // Only items that passed screening (or are in the Legacy album) may be logged.
+  const decisionObj = await env.MEDIA.get(decisionKey(sha256));
+  const decision = decisionObj ? ((await decisionObj.json()) as ScreenDecision) : undefined;
+  if (!decision?.include) {
+    await env.MEDIA.delete(key);
+    return json({ error: "not approved for Legacy's Life Journal; call /v1/screen first", safeToDelete: false }, 409);
+  }
+
   const ext = file.split(".").pop()!;
   const isVideo = VIDEO_EXTS.has(ext);
   const filename = field("filename") ?? file;
@@ -172,16 +228,11 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
     preview = { bytes: await readRange(env, key, 0, head.size), contentType: "image/jpeg", filename };
   }
 
-  let caption: string | undefined;
-  if (env.ANTHROPIC_API_KEY && preview && preview.bytes.length <= MAX_CAPTION_IMAGE_BYTES) {
-    caption = await captionPhoto(env.ANTHROPIC_API_KEY, env.CAPTION_MODEL || "claude-opus-5", preview.bytes);
-  }
-
   const kind = isVideo ? "Video" : "Photo";
   const page = await createJournalPage(
     { token: env.NOTION_TOKEN, databaseId: env.NOTION_DATABASE_ID, apiBase: env.NOTION_API_BASE },
     {
-      title: caption ?? `${kind} · ${formatTaken(capture.taken, env.TIMEZONE)}`,
+      title: decision.title ?? `${kind} · ${formatTaken(capture.taken, env.TIMEZONE)}`,
       kind,
       capture,
       filename,
@@ -191,7 +242,7 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
       originalUrl: `${url.origin}/m/${file}?sig=${await sign(env, file)}`,
       storageKey: key,
       tags: (env.DEFAULT_TAGS ?? "").split(",").map((t) => t.trim()).filter(Boolean),
-      caption,
+      selection: decision.source === "legacy-album" ? "Added from the Legacy album." : `Picked by AI: ${decision.reason}`,
       preview,
     },
   );
@@ -260,6 +311,7 @@ async function safeEqual(a: string, b: string): Promise<boolean> {
 }
 
 const storageKey = (file: string) => `originals/${file}`;
+const decisionKey = (sha256: string) => `decisions/${sha256}.json`;
 const contentTypeOf = (file: string) => CONTENT_TYPES[file.split(".").pop()!] ?? "application/octet-stream";
 
 function extensionOf(filename: string): string | undefined {

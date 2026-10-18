@@ -22,7 +22,8 @@ export interface JournalEntry {
   originalUrl: string;
   storageKey: string;
   tags: string[];
-  caption?: string;
+  /** Why this item is in the journal (AI reason or Legacy album). */
+  selection: string;
   preview?: { bytes: Uint8Array; contentType: string; filename: string };
 }
 
@@ -46,7 +47,6 @@ export async function createJournalPage(cfg: NotionConfig, entry: JournalEntry):
 
   const children: unknown[] = [];
   if (previewId) children.push({ type: "image", image: { type: "file_upload", file_upload: { id: previewId } } });
-  if (entry.caption) children.push(paragraph([text(entry.caption)]));
   children.push(paragraph([text("Original file: "), link(`${entry.filename} (${entry.kind.toLowerCase()})`, entry.originalUrl)]));
   for (const d of details) children.push(bullet(d));
   if (capture.latitude !== undefined && capture.longitude !== undefined) {
@@ -61,6 +61,7 @@ export async function createJournalPage(cfg: NotionConfig, entry: JournalEntry):
         ? "Fingerprint computed on the iPhone before upload matched the fingerprint computed on arrival."
         : "Fingerprint computed on arrival (the iPhone did not send one).",
     ),
+    bullet(entry.selection),
     bullet(`Capture time source: ${capture.taken.source}`),
     bullet(`Location source: ${capture.locationSource ?? "none"}`),
     bullet(`Archived unmodified in Cloudflare R2 as ${entry.storageKey}`),

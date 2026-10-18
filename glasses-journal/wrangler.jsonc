@@ -19,7 +19,8 @@
     // Tags added to every row (besides Photo/Video), so auto-logged rows can be
     // filtered. Comma-separated; empty for none.
     "DEFAULT_TAGS": "Auto-logged",
-    "CAPTION_MODEL": "claude-opus-5"
+    // Model that screens photos for Legacy and writes their titles.
+    "AI_MODEL": "claude-opus-5"
   }
   // Secrets (set with `npx wrangler secret put NAME`):
   //   UPLOAD_TOKEN          - shared secret the iPhone Shortcut sends
@@ -27,5 +28,5 @@
   //   NOTION_TOKEN          - Notion internal integration secret
   //   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
   //                         - optional; enables direct-to-R2 uploads (needed for videos over 100 MB)
-  //   ANTHROPIC_API_KEY     - optional; enables auto-captions
+  //   ANTHROPIC_API_KEY     - required; screens each photo for Legacy before upload
 }
