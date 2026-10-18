@@ -1,17 +1,39 @@
 # Glasses Journal
 
-This setup takes photos and videos from Meta glasses and does three things with each one:
+This setup takes every photo and video from your iPhone, both iPhone-camera and Meta-glasses captures, and does three things with each one:
 - Saves the **untouched original** in Cloudflare R2.
 - Computes a **SHA-256 fingerprint** of it.
-- Adds a row to the **Glasses Journal** database in Notion. The row includes the capture time, location, camera, a preview, an optional AI caption, and a signed link to the original.
+- Adds a row to **Legacy's Life Journal** in Notion. The row has Name, Date and Tags (Photo/Video plus `Auto-logged`). The page body holds a preview, the place and camera, the fingerprint, and a signed link to the original.
+
+After that, the phone copy can be deleted to free up space, following strict safety rules (see **Safety rules** below).
 
 ```
-Meta glasses ──(Meta AI app auto-import)──▶ iPhone camera roll
+Meta glasses ──(Meta AI app auto-import)──▶ iPhone camera roll ◀── iPhone camera
       ──(Shortcut, runs when the phone starts charging)──▶ this Worker ──▶ R2 (originals)
                                                                      └──▶ Notion (one row per file)
 ```
 
-Meta has no API for pulling media from the glasses or from Meta's cloud. The iPhone is a short stop along the way. Once a file is logged, the phone copy can be deleted.
+No computer is involved after setup. Everything goes from the phone over Wi-Fi or cellular.
+
+## Safety rules: nothing sensitive gets deleted
+
+| What | Uploaded and logged? | Deleted from phone? |
+|---|---|---|
+| **Hidden** items, and anything in a **"Private"** album | No, never touched | No |
+| **Screenshots** (often text-message evidence) | No, never touched | No |
+| **♥ Favorites**, e.g. MVA evidence you want on hand | Yes | **No, always kept** |
+| Everything else | Yes | Only when all the checks below pass |
+
+An item is deleted only if **every** one of these is true:
+1. The Worker stored the original and logged it in Notion.
+2. The fingerprint the iPhone computed matches the fingerprint the Worker computed on arrival. The Worker returns `safeToDelete: true` only in that case.
+3. You tap **Delete** on iOS's confirmation. Apple requires this, and it can't be skipped.
+
+Even then, deleted items sit in **Photos → Recently Deleted for 30 days**. If iCloud Photos is on, deleting on one device deletes on all of them; the R2 copy is your archive. The Worker never deletes an original it has logged. The only things it removes are a redundant second upload of a file it already has, or an upload whose fingerprint didn't match (the phone still has that one).
+
+**Roll it out in two stages.** Build the Shortcut **without** the delete step first. Run it, then open a few Notion entries and their "Original" links to check that everything is there. Only then add the delete step.
+
+**Optional, for evidence:** Cloudflare R2 can lock a bucket so objects can't be deleted or overwritten for a set retention period. Check the "bucket locks" section of the R2 docs; if you use it, set it on the `glasses-journal` bucket.
 
 ## What the Notion row proves
 
@@ -35,9 +57,9 @@ You need a Cloudflare account on the **Workers Paid** plan ($5/mo). Fingerprinti
 
 ### 1. Notion
 
-1. The **Glasses Journal** database already exists in your workspace. Its ID is in `wrangler.jsonc`.
+1. Rows go into **Legacy's Life Journal**. Its ID is in `wrangler.jsonc`. The Worker uses only its existing Name, Date and Tags fields, and adds the `Auto-logged` tag option on first use.
 2. Go to https://www.notion.so/profile/integrations, then **New integration** (internal). Copy the secret.
-3. Open the Glasses Journal database. In the **⋯** menu, go to **Connections** and add the integration. Without this step, Notion returns 404.
+3. Open Legacy's Life Journal. In the **⋯** menu, go to **Connections** and add the integration. Without this step, Notion returns 404.
 
 ### 2. Cloudflare
 
@@ -74,19 +96,25 @@ Deploy with `npm run deploy`. Note the URL it prints, e.g. `https://glasses-jour
 
 ### 3. Meta AI app
 
-Go to **Settings → your glasses → Media → Auto-import** (older app versions call it *Import automatically*) and turn it on. New captures will then land in the camera roll, in an album the app creates. Open **Photos → Albums** and note that album's exact name, e.g. *Meta AI* or *Meta View*.
+Go to **Settings → your glasses → Media → Auto-import** (older app versions call it *Import automatically*) and turn it on. Glasses captures will then land in your camera roll, where the Shortcut picks them up with everything else.
 
-### 4. iPhone Shortcut: "Glasses → Journal"
+Before the first run, set up the opt-outs:
+- Create an album named **Private** in Photos.
+- ♥ anything you want kept on the phone.
 
-In the Shortcuts app, create a new shortcut with these actions. Replace `WORKER` with your Worker URL and `TOKEN` with your `UPLOAD_TOKEN`.
+### 4. iPhone Shortcut: "Photos → Journal"
 
-1. **Find Photos**
-   - Filter: *Album is* `<the Meta album>`
-   - Sort: *Date Taken, Oldest First*
-   - Limit: 25
+In the Shortcuts app, create a new shortcut with these actions. Replace `WORKER` with your Worker URL and `TOKEN` with your `UPLOAD_TOKEN`. If your iOS version names a filter differently, the laptop Claude session can help you find it.
+
+1. **Find Photos** where **all** of the following are true:
+   - *Is a Screenshot* is false
+   - *Is Hidden* is false
+   - *Album* is not `Private`
+
+   Sort by *Date Taken, Oldest First*. Limit to 25.
 2. **Repeat with Each** item in *Photos*. Inside the loop:
    1. **Text**: `Repeat Item.Name`.`Repeat Item.File Extension`. Rename the output to `Filename`.
-   2. **Generate Hash** of *Repeat Item*, type **SHA256**. Rename the output to `Hash`.
+   2. **Generate Hash** of *Repeat Item*, type **SHA256**. Rename the output to `Hash`. **Don't skip this step**: without it, nothing is ever marked safe to delete.
    3. **Get Contents of URL**:
       - URL: `WORKER/v1/uploads`
       - Method: POST
@@ -95,7 +123,7 @@ In the Shortcuts app, create a new shortcut with these actions. Replace `WORKER`
 
       Rename the output to `Start`.
    4. **Get Contents of URL**:
-      - URL: *Start → uploadUrl*. Use Get Dictionary Value, or tap the variable and pick the key.
+      - URL: *Start → uploadUrl*
       - Method: PUT
       - Request Body: File = *Repeat Item*
       - **No headers.** The upload URL is already signed.
@@ -105,7 +133,7 @@ In the Shortcuts app, create a new shortcut with these actions. Replace `WORKER`
       - **Resize Image** to width 1200
       - **Convert Image** to JPEG, quality 0.8
 
-      Rename the output to `Preview`. For videos, leave `Preview` empty.
+      Rename the output to `Preview`.
    8. **Get Contents of URL**:
       - URL: *Start → completeUrl*
       - Method: POST
@@ -116,13 +144,14 @@ In the Shortcuts app, create a new shortcut with these actions. Replace `WORKER`
         - `takenAt` = *Taken*
         - `latitude`, `longitude`, `place` = the location details
         - `preview` = *Preview* (field type File)
-   9. **If** *Contents of URL → status* is `logged` or `duplicate`, then **Add to Variable** `Done` ← *Repeat Item*.
-3. After the loop, optionally add **Delete Photos** with input *Done* to free up the phone.
-   - iOS always asks you to confirm.
-   - Deleted items sit in *Recently Deleted* for 30 days.
-   - With iCloud Photos on, they're removed from iCloud too. The R2 copy is your archive.
 
-Then go to **Automation → New Automation → Charger → Is Connected → Run Immediately** and choose this shortcut. It runs whenever you plug in, and a failed file is simply retried next time. A **Time of Day** automation (e.g. 2 AM) works too.
+      Rename the output to `Result`.
+   9. **Stage 2 only.** **If** *Result → safeToDelete* is true **and** *Repeat Item.Is Favorite* is false, then **Add to Variable** `ToDelete` ← *Repeat Item*.
+3. **Stage 2 only.** After the loop: **If** *ToDelete* has any value, add **Delete Photos** with input *ToDelete*. iOS shows a confirmation with the count. Tap Delete only if the number looks right.
+
+**First run (the backlog):** run the Shortcut by hand, with the phone on Wi-Fi and charging and the Shortcuts app open. Each run handles 25 items, so repeat until it finds nothing new. It's safe to re-run: files already logged come back as `duplicate` and never create a second row.
+
+Then set up the automatic run: **Automation → New Automation → Charger → Is Connected → Run Immediately**, and choose this shortcut. A **Time of Day** automation (e.g. 2 AM) works too.
 
 ## API
 
@@ -132,7 +161,7 @@ Everything except `/health`, `/m/…` and the signed upload URL needs `Authoriza
 |---|---|---|
 | `POST` | `/v1/uploads` | `{"filename":"IMG_1.jpg"}` → `{file, uploadUrl, completeUrl, direct}` |
 | `PUT` | *uploadUrl* | Raw file bytes. Signed, expires in 1 h. Goes direct to R2 when R2 keys are set. |
-| `POST` | `/v1/uploads/:file/complete` | Multipart form: `sha256`, `filename`, `takenAt`, `latitude`, `longitude`, `place`, `preview`. Fingerprints, logs to Notion → `{status: "logged" \| "duplicate", sha256, notionUrl}`. Safe to retry. |
+| `POST` | `/v1/uploads/:file/complete` | Multipart form: `sha256`, `filename`, `takenAt`, `latitude`, `longitude`, `place`, `preview`. Fingerprints, logs to Notion → `{status: "logged" \| "duplicate", sha256, notionUrl, safeToDelete}`. `safeToDelete` is true only when the phone's `sha256` matched. Safe to retry. |
 | `GET` | `/m/:file?sig=…` | The original file, with Range support so videos stream. |
 
 Supported types: jpg, jpeg, heic, png, mp4, mov. Capture metadata is read from JPEG EXIF and MP4/MOV headers. For other formats, the Worker uses what the Shortcut sends.

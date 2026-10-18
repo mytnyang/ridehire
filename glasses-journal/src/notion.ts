@@ -30,33 +30,30 @@ export async function createJournalPage(cfg: NotionConfig, entry: JournalEntry):
   const previewId = entry.preview ? await uploadFile(cfg, entry.preview) : undefined;
   const { capture } = entry;
 
+  // Legacy's Life Journal has Name, Date, Tags and Entry. Entry is left for you;
+  // everything else about the file goes in the page body.
   const properties: Record<string, unknown> = {
     Name: { title: [text(entry.title)] },
-    Taken: { date: { start: capture.taken.start, ...(capture.taken.timeZone ? { time_zone: capture.taken.timeZone } : {}) } },
-    Type: { select: { name: entry.kind } },
-    Original: { url: entry.originalUrl },
-    "SHA-256": { rich_text: [text(entry.sha256)] },
-    "Size (MB)": { number: Math.round((entry.sizeBytes / 1_048_576) * 100) / 100 },
-    Filename: { rich_text: [text(entry.filename)] },
+    Date: { date: { start: capture.taken.start, ...(capture.taken.timeZone ? { time_zone: capture.taken.timeZone } : {}) } },
+    Tags: { multi_select: [entry.kind, ...entry.tags].map((name) => ({ name })) },
   };
-  if (capture.place) properties.Place = { rich_text: [text(capture.place)] };
-  if (capture.latitude !== undefined && capture.longitude !== undefined) {
-    properties.Latitude = { number: capture.latitude };
-    properties.Longitude = { number: capture.longitude };
-    properties.Map = { url: `https://maps.google.com/?q=${capture.latitude},${capture.longitude}` };
-  }
-  if (capture.camera) properties.Camera = { rich_text: [text(capture.camera)] };
-  if (capture.durationSeconds !== undefined) properties["Duration (s)"] = { number: capture.durationSeconds };
-  if (entry.tags.length) properties.Tags = { multi_select: entry.tags.map((name) => ({ name })) };
-  if (previewId) {
-    properties.Preview = { files: [{ type: "file_upload", file_upload: { id: previewId }, name: entry.preview!.filename }] };
-  }
+
+  const details: string[] = [];
+  if (capture.place) details.push(`Place: ${capture.place}`);
+  if (capture.camera) details.push(`Camera: ${capture.camera}`);
+  if (capture.durationSeconds !== undefined) details.push(`Length: ${capture.durationSeconds} s`);
+  details.push(`File: ${entry.filename} (${(entry.sizeBytes / 1_048_576).toFixed(2)} MB)`);
 
   const children: unknown[] = [];
   if (previewId) children.push({ type: "image", image: { type: "file_upload", file_upload: { id: previewId } } });
   if (entry.caption) children.push(paragraph([text(entry.caption)]));
+  children.push(paragraph([text("Original file: "), link(`${entry.filename} (${entry.kind.toLowerCase()})`, entry.originalUrl)]));
+  for (const d of details) children.push(bullet(d));
+  if (capture.latitude !== undefined && capture.longitude !== undefined) {
+    const mapUrl = `https://maps.google.com/?q=${capture.latitude},${capture.longitude}`;
+    children.push({ type: "bulleted_list_item", bulleted_list_item: { rich_text: [text("Location: "), link(`${capture.latitude}, ${capture.longitude}`, mapUrl)] } });
+  }
   children.push(
-    paragraph([text("Original file: "), link(`${entry.filename} (${entry.kind.toLowerCase()})`, entry.originalUrl)]),
     { type: "heading_3", heading_3: { rich_text: [text("Provenance")] } },
     bullet(`SHA-256 of original: ${entry.sha256}`),
     bullet(

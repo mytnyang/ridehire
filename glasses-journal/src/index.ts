@@ -135,12 +135,19 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
     return json({ error: "fingerprint mismatch: the file changed in transit; upload it again", expected: phoneSha, received: sha256 }, 422);
   }
 
+  // The phone may delete its copy only when it sent a fingerprint and that
+  // fingerprint matches an original we hold and have logged in Notion.
+  const phoneVerified = phoneSha === sha256;
+
   const markerKey = `by-hash/${sha256}.json`;
   const existing = await env.MEDIA.get(markerKey);
   if (existing) {
     const marker = (await existing.json()) as HashMarker;
-    if (marker.key !== key) await env.MEDIA.delete(key); // same content already archived under another name
-    return json({ status: "duplicate", sha256, notionUrl: marker.notionUrl });
+    // Only treat it as a duplicate if the archived original is still there.
+    if (marker.key === key || (await env.MEDIA.head(marker.key))) {
+      if (marker.key !== key) await env.MEDIA.delete(key); // same content already archived under another name
+      return json({ status: "duplicate", sha256, notionUrl: marker.notionUrl, safeToDelete: phoneVerified });
+    }
   }
 
   const ext = file.split(".").pop()!;
@@ -180,7 +187,7 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
       filename,
       sizeBytes: head.size,
       sha256,
-      phoneSha256Matched: phoneSha === sha256,
+      phoneSha256Matched: phoneVerified,
       originalUrl: `${url.origin}/m/${file}?sig=${await sign(env, file)}`,
       storageKey: key,
       tags: (env.DEFAULT_TAGS ?? "").split(",").map((t) => t.trim()).filter(Boolean),
@@ -191,7 +198,7 @@ async function completeUpload(request: Request, env: Env, file: string, url: URL
 
   const marker: HashMarker = { key, notionPageId: page.id, notionUrl: page.url, loggedAt: new Date().toISOString() };
   await env.MEDIA.put(markerKey, JSON.stringify(marker), { httpMetadata: { contentType: "application/json" } });
-  return json({ status: "logged", sha256, notionUrl: page.url });
+  return json({ status: "logged", sha256, notionUrl: page.url, safeToDelete: phoneVerified });
 }
 
 async function serveOriginal(request: Request, env: Env, file: string, url: URL): Promise<Response> {
